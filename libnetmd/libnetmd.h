@@ -45,14 +45,15 @@
 #include "trackinformation.h"
 
 /**
-   Data about a group, start track, finish track and name. Used to generate disc
-   header info.
+   Data about a group, start track, finish track, name and wide name.
+   Used to generate disc header info.
 */
 typedef struct netmd_group
 {
     uint16_t start;
     uint16_t finish;
     char* name;
+    char* wide_name;
 } netmd_group_t;
 
 /**
@@ -80,6 +81,7 @@ typedef struct netmd_pair
 */
 typedef struct {
     size_t header_length;
+    size_t wide_header_length;
     struct netmd_group *groups;
     unsigned int group_count;
 } minidisc;
@@ -196,14 +198,21 @@ int netmd_move_track(netmd_dev_handle* dev, const uint16_t start, const uint16_t
 */
 int netmd_initialize_disc_info(netmd_dev_handle* dev, minidisc* md);
 
-void netmd_parse_disc_title(minidisc* md, char* title, size_t title_length);
+void netmd_parse_disc_title(minidisc* md, char* title, char* wide_title, size_t title_length, size_t wide_title_length);
 
-void netmd_parse_group(minidisc* md, char* group, int* group_count);
+void netmd_parse_group(minidisc* md, char* group, char* wide_group, int* group_count);
 
-void netmd_parse_trackinformation(minidisc* md, char* group_name, int* group_count, char* tracks);
+void netmd_parse_trackinformation(minidisc* md, char* group_name, char* wide_group_name, int* group_count, char* tracks);
 
 int netmd_create_group(netmd_dev_handle* dev, minidisc* md, char* name);
 
+/**
+   Replaces the entire disc title, including groups, with the specified disc title
+
+   @param dev pointer to device returned by netmd_open
+   @param title disc title to set
+   @param title_length length of the supplied disc title
+*/
 int netmd_set_disc_title(netmd_dev_handle* dev, char* title, size_t title_length);
 
 /**

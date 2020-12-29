@@ -413,7 +413,7 @@ static unsigned int get_group_count(netmd_dev_handle* devh)
     char *delim;
     unsigned int group_count = 1;
 
-    title_length = request_disc_title(devh, title, 256);
+    title_length = request_disc_title_raw(devh, title, 256, false);
 
     group = title;
     delim = strstr(group, "//");
@@ -467,8 +467,9 @@ int netmd_set_group_title(netmd_dev_handle* dev, minidisc* md, unsigned int grou
     return 1;
 }
 
-static void set_group_data(minidisc* md, const int group, const char* const name, const uint16_t start, const uint16_t finish) {
+static void set_group_data(minidisc* md, const int group, const char* const name, const char* const wide_name, const uint16_t start, const uint16_t finish) {
     md->groups[group].name = strdup(name);
+    md->groups[group].wide_name = strdup(wide_name);
     md->groups[group].start = start;
     md->groups[group].finish = finish;
     return;
@@ -487,8 +488,10 @@ static void set_group_data(minidisc* md, const int group, const char* const name
 
 int netmd_initialize_disc_info(netmd_dev_handle* devh, minidisc* md)
 {
-    int disc_size = 0;
-    char disc[256];
+    int header_length = 0;
+    int wide_header_length = 0;
+    char narrow_header[256];
+    char wide_header[256];
 
     md->group_count = get_group_count(devh);
 
@@ -499,32 +502,46 @@ int netmd_initialize_disc_info(netmd_dev_handle* devh, minidisc* md)
     md->groups = malloc(sizeof(struct netmd_group) * md->group_count);
     memset(md->groups, 0, sizeof(struct netmd_group) * md->group_count);
 
-    disc_size = request_disc_title(devh, disc, 256);
-    printf("Raw title: %s \n", disc);
+    header_length = request_disc_title_raw(devh, narrow_header, 256, false);
+    printf("Raw title: %s \n", narrow_header);
 
-    if(disc_size > 0)
+    if(header_length > 0)
     {
-        md->header_length = (size_t)disc_size;
-        netmd_parse_disc_title(md, disc, md->header_length);
+        wide_header_length = request_disc_title_raw(devh, wide_header, 256, true);
+        if(wide_header_length > 0)
+        {
+            printf("Raw wide title: %s \n", wide_header);
+        }
+
+        md->header_length = (size_t)header_length;
+        md->wide_header_length = (size_t)wide_header_length;
+        netmd_parse_disc_title(md, narrow_header, wide_header, md->header_length, md->wide_header_length);
     }
 
-    if (NULL == md->groups[0].name)
+    if (NULL == md->groups[0].name && NULL == md->groups[0].wide_name)
     {
         /* set untitled disc title */
-        set_group_data(md, 0, "<Untitled>", 0, 0);
+        set_group_data(md, 0, "<Untitled>", "", 0, 0);
     }
 
-    return disc_size;
+    return header_length;
 }
 
-void netmd_parse_disc_title(minidisc* md, char* title, size_t title_length)
+// TODO: Update this to accept both narrow and wide titles,
+// also if wide title has a mismatch of group information,
+// erase non-matching(or all?) wide titles
+void netmd_parse_disc_title(minidisc* md, char* title, char* wide_title, size_t title_length, size_t wide_title_length)
 {
     char *group;
+    char *wide_group;
     char *delim;
+    char *wide_delim;
     int group_count = 1;
 
     group = title;
+    wide_group = wide_title;
     delim = strstr(group, "//");
+    wide_delim = strstr(wide_group, "//");
 
     while (delim < (title + title_length))
     {
@@ -534,7 +551,13 @@ void netmd_parse_disc_title(minidisc* md, char* title, size_t title_length)
             delim[0] = '\0';
         }
 
-        netmd_parse_group(md, group, &group_count);
+        if (wide_delim != NULL)
+        {
+            /* if wide delimiter was found */
+            wide_delim[0] = '\0';
+        }
+
+        netmd_parse_group(md, group, wide_group, &group_count);
 
         if (NULL == delim)
         {
@@ -543,6 +566,10 @@ void netmd_parse_disc_title(minidisc* md, char* title, size_t title_length)
         }
 
         group = delim + 2;
+        if (wide_delim < (wide_title + wide_title_length))
+        {
+            wide_group = wide_delim + 2;
+        }
 
         if (group > (title + title_length))
         {
@@ -551,43 +578,53 @@ void netmd_parse_disc_title(minidisc* md, char* title, size_t title_length)
         }
 
         delim = strstr(group, "//");
+        if (wide_delim < (wide_title + wide_title_length))
+        {
+            wide_delim = strstr(wide_group, "//");
+        }
     }
 }
 
-void netmd_parse_group(minidisc* md, char* group, int* group_count)
+void netmd_parse_group(minidisc* md, char* group, char* wide_group, int* group_count)
 {
     char *group_name;
+    char *wide_group_name;
 
     group_name = strchr(group, ';');
+    wide_group_name = strchr(wide_group, ';');
     if (NULL == group_name)
     {
         if (strlen(group) > 0)
         {
             /* disc title */
-            set_group_data(md, 0, group, 0, 0);
+            set_group_data(md, 0, group, wide_group, 0, 0);
         }
     }
     else
     {
         group_name[0] = '\0';
         group_name++;
+        if (NULL != wide_group_name) {
+            wide_group_name[0] = '\0';
+            wide_group_name++;
+        }
 
-        if (strlen(group_name) > 0)
+        if (strlen(group_name) > 0 || strlen(wide_group_name) > 0)
         {
             if (0 == strlen(group))
             {
-                set_group_data(md, *group_count, group_name, 0, 0);
+                set_group_data(md, *group_count, group_name, wide_group_name, 0, 0);
                 (*group_count)++;
             }
             else
             {
-                netmd_parse_trackinformation(md, group_name, group_count, group);
+                netmd_parse_trackinformation(md, group_name, wide_group_name, group_count, group);
             }
         }
     }
 }
 
-void netmd_parse_trackinformation(minidisc* md, char* group_name, int* group_count, char* tracks)
+void netmd_parse_trackinformation(minidisc* md, char* group_name, char* wide_group_name, int* group_count, char* tracks)
 {
     char *track_last;
     uint16_t start, finish;
@@ -596,9 +633,10 @@ void netmd_parse_trackinformation(minidisc* md, char* group_name, int* group_cou
     if (start == 0)
     {
         /* disc title */
-        set_group_data(md, 0, group_name, 0, 0);
+        set_group_data(md, 0, group_name, wide_group_name, 0, 0);
     }
-    else {
+    else
+    {
         track_last = strchr(tracks, '-');
 
         if (NULL == track_last)
@@ -613,7 +651,7 @@ void netmd_parse_trackinformation(minidisc* md, char* group_name, int* group_cou
             finish = strtoul(track_last, (char **) NULL, 10) & 0xffffU;
         }
 
-        set_group_data(md, *group_count, group_name, start, finish);
+        set_group_data(md, *group_count, group_name, wide_group_name, start, finish);
         (*group_count)++;
     }
 }
@@ -628,20 +666,59 @@ void print_groups(minidisc *md)
     printf("\n");
 }
 
-int netmd_create_group(netmd_dev_handle* dev, minidisc* md, char* name)
+int netmd_create_group_narrow(netmd_dev_handle* dev, minidisc* md, char* narrow_name)
 {
-    unsigned int new_index;
+    GError * err = NULL;
 
-    new_index = md->group_count;
-    md->group_count++;
-    md->groups = realloc(md->groups, sizeof(struct netmd_group) * (md->group_count + 1));
+    // make a copy of the title to try turning into JIS X0201
+    char * halfwidth_converted_title_text[255];
+    strncpy((char *)halfwidth_converted_title_text, narrow_name, size);
+    kata_full_to_half((uint8_t*)halfwidth_converted_title_text);
+    char * encoded_title_text = g_convert((const char*)halfwidth_converted_title_text, size, "JIS_X0201", "UTF-8", NULL, NULL, &err);
 
-    md->groups[new_index].name = strdup(name);
+    // TODO: Check conversion to target encoding
+    unsigned int new_index = md->group_count + 1;
+    md->groups = realloc(md->groups, sizeof(struct netmd_group) * (new_index));
+
+    md->groups[new_index].name = strdup(narrow_name);
+    md->groups[new_index].wide_name = NULL;
     md->groups[new_index].start = 0;
     md->groups[new_index].finish = 0;
 
     netmd_write_disc_header(dev, md);
     return 0;
+}
+
+int netmd_create_group_wide(netmd_dev_handle* dev, minidisc* md, char* wide_name)
+{
+    GError * err = NULL;
+
+    // TODO: Check conversion to target encoding
+    unsigned int new_index = md->group_count + 1;
+    md->groups = realloc(md->groups, sizeof(struct netmd_group) * (new_index));
+
+    md->groups[new_index].name = NULL;
+    md->groups[new_index].wide_name = strdup(wide_name);
+    md->groups[new_index].start = 0;
+    md->groups[new_index].finish = 0;
+
+    netmd_write_disc_header(dev, md);
+    return 0;
+}
+
+// TODO: Split into create_group_narrow and create_group_wide,
+// use best-effort approach to maintain compatibility
+int netmd_create_group(netmd_dev_handle* dev, minidisc* md, char* name)
+{
+    int ret = 1;
+
+    ret = netmd_create_group_narrow(dev, md, name);
+
+    if (ret == -1) {
+        ret = netmd_set_title_wide(dev, md, name);
+    }
+
+    return ret;
 }
 
 int netmd_set_disc_title_raw(netmd_dev_handle* dev, char* title, size_t title_length, bool wide_chars)
@@ -1012,6 +1089,7 @@ size_t netmd_calculate_number_length(const unsigned int num)
 
 }
 
+// TODO: Duplicate for wide characters
 size_t netmd_calculate_disc_header_length(minidisc* md)
 {
     size_t header_size;
